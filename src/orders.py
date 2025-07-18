@@ -61,4 +61,20 @@ class Order:
     def __repr__(self):
         return (f"Order({self.order_id[:8]}..., {self.agent_id}, {self.side.value}, {self.order_type.value}, qty = {self.quantity}, price = {self.price})")
 
+@dataclass 
+# represents an executed trade between two orders 
+class Trade: 
+    symbol: str 
+    quantity: int 
+    price: float
+    timestamp: float 
+    buy_order_id: str 
+    sell_order_id: str 
+    buyer_agent_id: str 
+    seller_agent_id: str
+    trade_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def __repr__(self) -> str: 
+        return (f"trade({self.trade_id[:8]}..., {self.symbol}, qty = {self.quantity}, price = {self.price})")
+
 
