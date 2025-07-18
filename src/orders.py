@@ -61,8 +61,8 @@ class Order:
     def __repr__(self):
         return (f"Order({self.order_id[:8]}..., {self.agent_id}, {self.side.value}, {self.order_type.value}, qty = {self.quantity}, price = {self.price})")
 
-@dataclass 
 # represents an executed trade between two orders 
+@dataclass 
 class Trade: 
     symbol: str 
     quantity: int 
@@ -76,5 +76,30 @@ class Trade:
 
     def __repr__(self) -> str: 
         return (f"trade({self.trade_id[:8]}..., {self.symbol}, qty = {self.quantity}, price = {self.price})")
+    
+#represents market state 
+@dataclass 
+class MarketData: 
+    symbol: str 
+    timestamp: float 
+    best_bid: Optional[float] = None 
+    best_ask: Optional[float] = None
+    bid_size: int = 0
+    ask_size: int = 0 
+    last_price: Optional[float] = None
+    last_quantity: int = 0 
 
-
+    @property 
+    def spread(self) -> Optional[float]:
+        #calculates bid-ask spread 
+        if self.best_bid is not None and self.best_ask is not None: 
+            return self.best_ask - self.best_bid 
+        return None 
+    
+    @property 
+    def mid_price(self) -> Optional[float]:
+        #calculates mid price 
+        if self.best_bid is not None and self.best_ask is not None: 
+            return (self.best_bid + self.best_ask) / 2
+        return None
+    
