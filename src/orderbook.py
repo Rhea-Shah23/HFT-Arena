@@ -4,6 +4,7 @@ import heapq
 from typing import Dict, List, Optional, Tuple 
 from collections import defaultdict 
 from .orders import Order, Trade, OrderSide, OrderStatus, OrderType, MarketData 
+import time 
 
 #order book for a single symbol 
 
@@ -192,4 +193,99 @@ class OrderBook:
         )
     
     #update order fill quantity and status 
+    def _update_order_fill(self, order: Order, fill_quantity: int): 
+        order.filled_quantity += fill_quantity 
+
+        if order.filled_quantity == order.quantity: 
+            order.status = OrderStatus.FILLED
+        elif order.filled_quantity > 0: 
+            order.status = OrderStatus.PARTIAL_FILL
+
+    #cancel an order by id 
+    def cancel_order(self, order_id: str) -> bool: 
+        if order_id in self.orders: 
+            order = self.orders[order_id]
+            order.status = OrderStatus.CANCELLED
+            del self.orders[order_id]
+            return True 
+        return False 
+    
+    #get best bid price 
+    def get_best_bid(self) -> Optional[float]: 
+        self._clean_heap(self.bids)
+        if self.bids:
+            return -self.bids[0][0]
+        return None
+    
+    #get best ask price
+    def get_best_ask(self) -> Optional[float]:
+        self._clean_heap(self.asks)
+        if self.asks: 
+            return self.asks[0][0]
+        return None
+    
+    #remove cancelled/filled orders from heap
+    def _clean_heap(self, heap): 
+        while heap: 
+            _, _, order = heap[0]
+            if order.status == OrderStatus.PENDING:
+                break
+            heapq.heappop(heap)
+
+    #get snapshot of current market data 
+    def get_market_data(self) -> MarketData: 
+        best_bid = self.get_best_bid()
+        best_ask = self.get_best_ask() 
+
+        #calculate sizes @ best prices 
+        bid_size = 0 
+        ask_size = 0 
+
+        if best_bid is not None: 
+            for _, _, order in self.bids: 
+                if order.status == OrderStatus.PENDING and order.price == best_bid: 
+                    bid_size += order.remaining_quantity()
+                elif order.price != best_bid: 
+                    break 
+        
+        if best_ask is not None: 
+            for _, _, order in self.asks: 
+                if order.status == OrderStatus.PENDING and order.price == best_ask: 
+                    ask_size += order.remaining_quantity() 
+                elif order.price != best_ask: 
+                    break 
+        
+        return MarketData(
+            symbol = self.symbol, 
+            timestamp = time.time(), 
+            best_bid = best_bid, 
+            best_ask = best_ask, 
+            bid_size = bid_size, 
+            ask_size = ask_size, 
+            last_price = self.last_trade_price,
+            last_quantity = self.last_trade_quantity 
+        )
+    
+    #get order book depth 
+    def get_depth(self, levels: int = 5) -> Dict: 
+        self._clean_heap(self.bids) 
+        self._clean_heap(self.asks)
+
+        #group price level 
+        bid_levels = defaultdict(int)
+        ask_levels = defaultdict(int)
+
+        for _, _, order in self.asks: 
+            if order.status == OrderStatus.PENDING:
+                ask_levels[order.price] += order.remaining_quantity()
+        
+        #sort & limit to top levels
+        sorted_bids = sorted(bid_levels.items(), key=lambda x: x[0], reverse = True)[:levels]
+        sorted_asks = sorted(ask_levels.items(), key=lambda x: x[0])[:levels]
+
+        return { 
+            "bids": sorted_bids, 
+            "asks": sorted_asks, 
+            "timestamp": time.time()
+        }
 
