@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import asyncio 
 import logging 
 
-from .orders import Order, Trade, OrderStatus, MarketData 
+from .orders import Order, Trade, MarketData, OrderSide, OrderType 
 from .orderbook import OrderBook 
 
 #simulates network latency for different agents 
@@ -174,4 +174,125 @@ class MatchingEngine:
         self.stats["agent_positions"][trade.buyer_agent_id][trade.symbol] += trade.quantity
         self.stats["agent_positions"][trade.seller_agent_id][trade.symbol] -= trade.quantity
         
+    #get current market data for a symbol 
+    def get_market_data(self, symbol: str) -> Optional[MarketData]:
+        if symbol in self.order_books:
+            return self.order_book[symbol].get_market_data()
+        return None 
+    
+    #get market data for all symbols 
+    def get_all_market_data(self) -> Dict[str, MarketData]:
+        return {
+            symbol: book.get_market_data() 
+            for symbol, book in self.order_book.items()
+        }
+    
+    #get order book depth for visualization 
+    def get_order_book_depth(self, symbol: str, levels: int = 5) -> Optional[Dict]: 
+        if symbol in self.order_books:
+            return self.order_books[symbol].get_depth(levels)
+        return None 
+    
+    #callback for trade events 
+    def add_trade_callbacks(self, callback: Callable[[Trade], None]):
+        self.trade_callbacks.append(callback)
+
+    #callback for maket data updates 
+    def add_market_data_callback(self, callback: Callable[[MarketData], None]):
+        self.market_data_callbacks.append(callback)
+
+    #real-time simulation loop 
+    def start_simulation(self):
+        self.running = True 
+        self.current_time = time.time()
+        self.logger.info("matching engine simulation started")
+
+        def simulation_loop():
+            while self.running:
+                start_time = time.time()
+
+                trades = self.process_events()
+
+                #publish market updates
+                if trades: 
+                    for symbol in set(trade.symbol for trade in trades):
+                        market_data = self.get_market_data(symbol)
+                        for callback in self.market_data_callbacks:
+                            callback(market_data)
+
+                #simulation speed 
+                elapsed = time.time() - start_time 
+                sleep_time = max(0, 0.001 - elapsed)
+                time.sleep(sleep_time / self.simulation_speed)
+
+        self.simulation_thread = threading.Thread(target = simulation_loop, daemon = True)
+        self.simulation_thread.start()
+
+    #stop simulation 
+    def stop_simulation(self):
+        self.running = False 
+        self.logger.info("matching engine simulation stopped")
+
+    #restart engine (for new simulation)
+    def reset(self):
+        with self.lock:
+            self.event_queue.clear()
+            for book in self.order_books.values():
+                book.orders.clear()
+                book.bids.clear()
+                book.asks.clear()
+                book.trades.clear()
+
+            #reset stats 
+            self.stats = {
+                "total_trades": 0,
+                "total_volume": 0,
+                "orders_processed": 0,
+                "orders_cancelled": 0,
+                "agent_pnl":defaultdict(float), 
+                "agent_positions": defaultdict(lambda: defaultdict(int)),
+                "latency_violations": 0 
+            }
+
+            self.logger.info("matching engine reset")
+
+    #get engine statst 
+    def get_statistics(self) -> Dict[str, Any]:
+        with self.lock:
+            stats = dict(self.stats)
+            stats["agent_pnl"] = dict(stats["agent_pnl"])
+            stats["agent_positions"] = {
+                agent: dict(positions)
+                for agent, positions in stats["agent_positions"].items()
+            }
+
+            #performance metrics 
+            stats["avg_trades_per_second"] = self.stats["total_trades"] / max(1, time.time() - self.current_time)
+            stats["pending_events"] = len(self.event_queue)
+
+            return stats 
         
+#inject rnadom market ordrese (simulates external liquidity)
+def inject_market_noise(self, symbol: str, intensity: float = 0.1):
+    import random 
+    if symbol not in self.order_books:
+        return 
+    market_data = self.get_market_data(symbol)
+    if not market_data.best_bid or not market_data.best_ask: 
+        return 
+    
+    #random market order 
+    side = random.choice([OrderSide.BUY, OrderSide.SELL])
+    quantity = random.randint(10, 100)
+
+    #noise order (min. latency)
+    noise_order = Order(
+        agent_id = "market_noise", 
+        symbol = symbol, 
+        side = side, 
+        order_type = OrderType.MARKET, 
+        quantity = quantity, 
+        latency_delay = 0.0001
+    )
+
+    self.submit_order(noise_order)
