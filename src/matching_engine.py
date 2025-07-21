@@ -1,132 +1,177 @@
-#hft matching engine w/ latency simulation and market microstructure features 
+# high-frequency matching engine 
+# coordinates: multiple order books, latency simulation, and agent interactions 
 
 import time 
-import heapq 
-from typing import List, Dict, Optional, Tuple, Callable 
-from dataclasses import dataclass 
-from collections import defaultdict 
 import threading 
-from queue import PriorityQueue
-import random 
+from typing import Dict, List, Optional, Callable, Any 
+from collections import defaultdict, deque 
+import heapq 
+from dataclasses import dataclass, field 
+import asyncio 
+import logging 
 
-from .orders import Order, OrderSide, OrderType 
+from .orders import Order, Trade, OrderStatus, MarketData 
 from .orderbook import OrderBook 
 
-#represents completed trade 
+#simulates network latency for different agents 
 @dataclass 
-class TradeExecution: 
-    trade_id: str 
-    timestamp: float
-    buyer_id: str 
-    seller_id: str 
-    price: float 
-    quantity: int 
-    agressor_side: OrderSide 
+class LatencyProfile: 
+    base_latency: float = 0.001 #1ms 
+    jitter: float = 0.0002 
+    packet_loss_rate: float = 0.0001 
 
-#event scheduled for later execution; simulates latency 
+    #generate realistic latency w/ jitter 
+    def get_latency(self) -> float: 
+        import random 
+        if random.random() < self.packet_loss_rate: 
+            return self.base_latency * 10 #retransmission delay 
+        return self.base_latency + random.uniform(-self.jitter, self.jitter) 
+    
+#time-ordered event in matching engine 
 @dataclass 
-class LatencyEvent: 
+class OrderEvent: 
     timestamp: float 
     order: Order 
-    agent_id: str 
+    event_type : str = "new_order" #options: new_order, cancel_order 
 
     def __lt__(self, other): 
         return self.timestamp < other.timestamp 
     
-#matching engine w/ latency simulation, slippage, and market microstructure 
+# event driven matching engine 
 class MatchingEngine: 
-    def __init__(self, symbol: str, tick_size: float = 0.01, latency_config: Optional[Dict] = None): 
-        self.symbol = symbol 
-        self.tick_size = tick_size 
-        self.order_book = OrderBook(symbol, tick_size) 
+    def __init__(self, symbols: List[str] = None):
+        self.symbols = symbols or ["AAPL", "MSFT", "GOOGL"]
 
-        #latency config 
-        self.latency_config = latency_config or { 
-            "base_latency_ms" : 0.1, 
-            "latency_variance_ms" : 0.05, 
-            "processing_latency_ms": 0.02, 
-            "network_congestion_factor" : 1.0
+        #order books for each symbol 
+        self.order_books: Dict[str, OrderBook] = {
+            symbol: OrderBook(symbol) for symbol in self.symbols 
         }
 
-        #event scheduling 
-        self.event_queue: List[LatencyEvent] = []
-        self.current_time = time.time() 
-
-        #trade tracking 
-        self.trade_id_counter = 0 
-        self.completed_trades: List[TradeExecution] = [] 
-        self.trade_callbacks: List[Callable[[TradeExecution], None]] = [] 
+        #event queue 
+        self.event_queue: List[OrderEvent] = []
 
         #agent latency profiles 
-        self.agent_latencies: List[Callable] = [] 
+        self.latency_profiles: Dict[str, LatencyProfile] = {}
 
-        #threading for real-time simulation 
+        #engine state 
         self.running = False 
-        self.engine_thread: Optional[threading.Thread] = None 
+        self.current_time = time.time() 
+        self.simulation_speed = 1.0 #real time 
 
-    #register latency profile for agent 
-    def register_agent_latency(self, agent_id: str, latency_profile: Dict): 
-        self.agent_latencies[agent_id] = latency_profile
+        #stats 
+        self.stats = {
+            "total_trades": 0, 
+            "total_volume": 0, 
+            "orders_processed": 0, 
+            "orders_cancelled": 0, 
+            "agent_pnl": defaultdict(float), 
+            "agent_positions": defaultdict(lambda: defaultdict(int)),
+            "latency_violations": 0 
+        }
 
-    #add callback for trade notification 
-    def add_trade_callback(self, callback: Callable[[TradeExecution], None]): 
-        self.trade_callbacks.append(callback) 
+        #event callbacks 
+        self.trade_callbacks: List[Callable[[Trade], None]] = []
+        self.market_data_callbacks: List[Callable[[MarketData], None]] = []
 
-    #add callback for market data updates 
-    def add_market_data_callback(self, callback: Callable): 
-        self.market_data_callbacks.append(callback) 
+        #thread saftey 
+        self.lock = threading.Lock() 
 
-    #calc realistic latency 
-    def calculate_latency(self, agent_id: str) -> float: 
-        base_config = self.latency_config 
-        agent_config = self.agent_latencies.get(agent_id, {})
+        #logging 
+        logging.basicConfig(level = logging.INFO)
+        self.logger = logging.getLogger(__name__)
 
-        #latency calc 
-        base_latency = agent_config.get("base_latency_ms", base_config["base_latency_ms"])
-        variance = agent_config.get("latency_variance_ms", base_config["latency_variance_ms"])
-        latency = base_latency + random.uniform(-variance, variance) 
+    #register agent w/ specific latency
+    def register_agent(self, agent_id: str, latency_profile: LatencyProfile = None):
+        if latency_profile is None:
+            latency_profile = LatencyProfile()
+        self.latency_profiles[agent_id] = latency_profile
+        self.logger.info(f"registered agent {agent_id} with latency {latency_profile.base_latency}s")
 
-        #co-location adjustment
-        if agent_config.get("co_located", False): 
-            latency *= 0.1 #co-located agents have lower latency
+    #submit order w/ latency simulation
+    #returns order_id for tracking 
+    def submit_order(self, order: Order) -> str:
+        with self.lock:
+            #apply latency delay 
+            if order.agent_id in self.latency_profiles: 
+                latency = self.latency_profiles[order.agent_id].get_latency()
+                order.latency_delay = latency 
 
-        #netowrk congestion 
-        congestion = base_config.get("network_congestion_factor", 1.0)
-        latency *= congestion 
+            #calc effective timestamp 
+            order.effective_timestamp = order.timestamp + order.latency_delay 
 
-        return max(0.001, latency / 1000.0) #converted to seconds; min value: 1ms
-    
-#submit order w/ latency simulation 
-def submit_order(self, order: Order, agent_id: str) -> bool: 
-    latency = self.calculate_latency(agent_id)
-    arrival_time = self.current_time + latency 
+            #add to event queue 
+            event = OrderEvent(
+                timestamp = order.effective_timestamp, 
+                order = order, 
+                event_type = "new_order"
+            )
+            heapq.heappush(self.event_queue, event)
 
-    #schedule order 
-    event = LatencyEvent(arrival_time, order, agent_id) 
-    heapq.heappush(self.event_queue, event) 
-
-    return True 
-
-#process all events up to current time 
-def process_pending_events(self) -> List[TradeExecution]: 
-    trades = [] 
-
-    while self.event_queue and self.event_queue[0].timestamp <= self.current_time: 
-        event = heapq.heappop(self.event_queue) 
-        trade_results = self._execute_order(event.order, event.agent_id) 
-        trades.extend(trade_results) 
-
-    return trades 
-
-#execute order against order book 
-def _execute_order(self, order: Order, agent_id: str) -> List[TradeExecution]: 
-    trades = [] 
-
-    if order.order_type == OrderType.MARKET: 
-        trades = self._execute_market_order(order, agent_id) 
-    elif order.order_type == OrderType.LIMIT: 
-        trades = self._execute_limit_order(order, agent_id) 
-    elif order.order_type == OrderType.CANCEL: 
+            self.logger.debug(f"order {order.order_id[:8]} queued with {order.latnecy_delay * 1000:.2f}ms latency")
+            return order.order_id 
         
+    #cancel an order w/ latency 
+    def cancel_order(self, agent_id: str, order_id: str) -> bool:
+        with self.lock:
+            if agent_id in self.latnecy_profiles:
+                latency = self.latnecy_profiles[agent_id].get_latency()
+                cancel_time = time.time() + latency 
 
+                for symbol in self.symbols:
+                    if self.order_books[symbol].cancel_order(order_id):
+                        self.stats["orders_cancelled"] += 1 
+                        self.logger.debug(f"order {order_id[:8]} cancelled by {agent_id}")
+                        return True 
+                    
+        return False
+    
+    #processes events to current time 
+    def process_events(self) -> List[Trade]:
+        trades = []
+        current_time = time.time()
+
+        with self.lock: 
+            while self.event_queue and self.event_queue[0].timestamp <= current_time:
+                event = heapq.heappop(self.event_queue)
+
+                if event.event_type == "new_order":
+                    order = event.order 
+
+                    #latency budget violation 
+                    actual_delay = current_time - order.timestamp
+                    if hasattr(order, "max_latency") and actual_delay > order.max_latency: 
+                        self.stats["latency violation"] += 1
+                        self.logger.warning(f"latency violation: {actual_delay*1000:.2f}ms > {order.max_latency*1000:.2f}ms") 
+                        continue 
+
+                    #route to order book 
+                    if order.symbol in self.order_books:
+                        book_trades = self.order_books[order.symbol].add_order(order)
+                        trades.extend(book_trades)
+
+                        #update stats 
+                        self.stats["orders_processed"] += 1 
+                        for trade in book_trades: 
+                            self._update_trade_stats(trade) 
+
+                            #callback 
+                            for callback in self.trade_callbacks: 
+                                callback(trade)
+
+        return trades 
+    
+    #update internal stats 
+    def _update_trade_stats(self, trade: Trade):
+        self.stats["total_trades"] += 1 
+        self.stats["total_volume"] += trade.quantity 
+
+        #update agent pnl 
+        trade_value = trade.quantity * trade.price 
+        self.stats["agent_pnl"][trade.buyer_agent_id][trade.symbol] += trade.quantity
+        self.stats["agent_pnl"][trade.seller_agent_id][trade.symbol] -= trade.quantity
+
+        #update positions 
+        self.stats["agent_positions"][trade.buyer_agent_id][trade.symbol] += trade.quantity
+        self.stats["agent_positions"][trade.seller_agent_id][trade.symbol] -= trade.quantity
+        
         
