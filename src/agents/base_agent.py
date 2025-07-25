@@ -220,4 +220,73 @@ class BaseAgent(ABC):
 
         if self.latency_samples:
             self.metrics.avg_latency = sum(self.latency_samples) / len(self.latency_samples)
-            
+
+    #calc unrealized pnl based on current market prices
+    def get_unrealized_pnl(self) -> float:
+        unrealized = 0.0 
+
+        for symbol, position in self.positions.items():
+            if position != 0 and symbol in self.market_data_cache:
+                market_data = self.market_data_cache[symbol]
+                if market_data.last_price:
+                    unrealized += positions *market_data.last_price 
+
+        self.metrics.unrealized_pnl = unrealized 
+        return unrealized 
+    
+    #get current position for symbol 
+    def get_position(self, symbol: str) -> int:
+        exposure = 0.0 
+
+        for symbol, position in self.positions.items():
+            if symbol in self.market_data_cache:
+                market_data = self.market_data_cache[symbol]
+                if market_data.last_price:
+                    exposure += abs(position * market_data.last_price)
+
+        return exposure 
+    
+    #get current performance metrics
+    def get_metrics(self) -> PerformanceMetrics:
+        self.get_unrealized_pnl()
+        self.metrics.total_pnl = self.metrics.realized_pnl + self.metrics.unrealized_pnl
+
+        if len(self.pnl_history) > 1:
+            import statistics 
+            returns = [self.pnl_history[i] - self.pnl_history[i-1]
+                       for i in range(1, len(self.pnl_history))]
+            if returns and statistics.stdev(returns) > 0:
+                self.metrics.sharpe_ratio = statistics.mean(returns) / statistics.stdev(returns)
+
+        return self.metrics 
+    
+    #reset agent state 
+    def reset(self):
+        self.positions.clear()
+        self.active_orders.clear()
+        self.order_history.clear()
+        self.trade_history.clear()
+        self.market_data_cache.clear()
+        self.metrics = PerformanceMetrics()
+        self.pnl_history.clear()
+        self.peak_pnl = 0.0 
+        self.latency_samples.clear()
+        self.emergency_liquidation = False 
+        self.logger.info(f"agent {self.agent_id} reset")
+
+    #emergency liquidations 
+    def emergency_liquidate(self):
+        self.logger.error(f"emergency liquidation triggered for {self.agent_id}")
+        self.cancel_all_orders()
+
+        for symbol, position in self.positions.items():
+            if position != 0:
+                side = OrderSide.SELL if position > 0 else OrderSide.BUY 
+                quantity = abs(position)
+                self.submit_order(symbol, side, OrderType.MARKET, quantity)
+
+        self.emergency_liquidation = True 
+
+    def __repr__(self):
+        return f"{self.__class__.__name__} ({self.agent_id})"
+
