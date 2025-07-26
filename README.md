@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-This project simulates a realistic high-frequency trading (HFT) environment where autonomous agents compete in a latency-sensitive, event-driven order book. Each agent—whether rule-based, reinforcement learning-driven, or hybrid—is constrained by network latency, slippage, and competition. The simulation aims to explore emergent behaviors such as bluffing, market making, latency arbitrage, and spoofing detection, offering a platform to study real-world market microstructure and decision-making under pres...
+This project simulates a realistic high-frequency trading (HFT) environment where autonomous agents compete in a latency-sensitive, event-driven order book. Each agent—whether rule-based, reinforcement learning-driven, or hybrid—is constrained by network latency, slippage, and competition. The simulation aims to explore emergent behaviors such as bluffing, market making, latency arbitrage, and spoofing detection, offering a platform to study real-world market microstructure and decision-making under pressure
 
 ---
 
