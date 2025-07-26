@@ -62,4 +62,153 @@ class TestMatchingEngine:
         assert order_id == order.order_id 
         assert len(self.engine.event_queue) == 1 
         assert order.latency_delay > 0 
-        assert order.effective_timestamp > order.timestamp 
+        assert order.effective_timestamp > order.timestamp
+
+    def test_event_processing(self):
+        order = Order(
+            agent_id = "agent1", 
+            symbol = "AAPL",
+            side = OrderSide.BUY, 
+            order_type = OrderType.LIMIT,
+            quantity = 100, 
+            price = 150.00
+        ) 
+        order.latency_delay = 0.001 
+
+        self.engine.submit_order(order)
+
+        time.sleep(0.002)
+        trades = self.engine.process_events()
+
+        assert self.egnine.stats["orders_processed"] == 1 
+        assert len(trades) == 0 
+
+        market_data = self.engine.get_market_data("AAPL")
+        assert market_data.best_bid == 150.0 
+
+    def test_matching_across_agents(self):
+        sell_order = Order(
+            agent_id = "agent1",
+            symbol = "AAPL"
+            side = OrderSide.SELL,
+            order_type = OrderType.LIMIT,
+            quantity = 100, 
+            price = 150.00
+        )
+        self.engine.submit_order(sell_order)
+
+        buy_order = Order(
+            agent_id = "agent2",
+            symbol = "AAPL",
+            side = OrderSide.BUY,
+            order_type = OrderType.LIMIT, 
+            quantity = 100, 
+            price = 150.00
+        )
+        self.engine.submit_order(buy_order)
+
+        time.sleep(0.005) 
+        trades = self.engine.process_events()
+
+        assert len(trades) == 1 
+        trade = trades[0]
+        assert trade.quantity == 100 
+        assert trade.price == 150.00 
+        assert trade.buyer_agent_id == "agent2"
+        assert trade.seller_agent_id == "agent1"
+
+        assert self.engine.stats["total_trades"] == 1
+        assert self.engine.stats["total_volume"] == 100 
+        assert self.engine.stats["agent_pnl"]["agent1"] == 15000.00
+        assert self.engine.stats["agent_pnl"]["agent2"] == -15000.00
+
+    def test_multi_symbol_trading(self):
+        aapl_order = Order(
+            agent_id = "agent1",
+            symbol = "AAPL",
+            side = OrderSide.BUY,
+            order_type = OrderType.LIMIT,
+            quantity = 100,
+            price = 150.00
+        )
+
+        msft_order = Order(
+            agent_id = "agent2",
+            symbol = "MSFT",
+            side = OrderSide.BUY,
+            order_type = OrderType.LIMIT,
+            quantity = 50,
+            price = 250.00
+        )
+
+        self.engine.submit_order(aapl_order)
+        self.engine.submit_order(msft_order)
+
+        time.sleep(0.005)
+        self.engine.process_events()
+
+        aapl_data = self.engine.get_market_data("AAPL")
+        msft_data = self.engine.get_market_data("MSFT")
+
+        all_data = self.engine.get_all_market_data()
+        assert len(all_data) == 2 
+        assert "AAPL" in all_data
+        assert "MSFT" in all_data
+
+    def test_latency_budget_violation(self):
+        order = Order(
+            agent_id = "agent1",
+            symbol = "AAPL",
+            side = OrderSide.BUY, 
+            order_type = OrderType.LIMIT, 
+            quantity = 100, 
+            price = 150.00 
+        )
+        order.max_latency = 0.001 
+
+        order.latency_delay = 0.002 
+        self.engine.submit_order(order)
+
+        time.sleep(0.005)
+        trades = self.engine.process_events()
+
+        assert self.engine.stats["latency_violations"] >= 1 
+        market_data = self.engine.get_market_data("AAPL")
+        assert market_data.best_bid is None 
+
+    def test_market_order_execution(self):
+        limit_order = Order(
+            agent_id = "agent1",
+            symbol = "AAPL",
+            side = OrderSide.SELL,
+            order_type = OrderType.LIMIT,
+            quantity = 100,
+            price = 150.00
+        )
+        self.engine.submit_order(limit_order)
+
+        market_order = Order(
+            agent_id = "agent2"
+            symbol = "AAPL",
+            side = OrderSide.BUY,
+            order_type = OrderType.MARKET,
+            quantity = 100
+        )
+        self.engine.submit_order(market_order)
+
+        time.sleep(0.005)
+        trades = self.engine.process_events()
+
+        assert len(trades) == 1 
+        assert trades[0].price == 150.00
+        assert trades[0].quantity == 100 
+
+    def test_partial_fill_execution(self):
+        sell_order = Order(
+            agent_id = "agent1",
+            symbol = "AAPL",
+            side = OrderSide.SELL,
+            order_type = OrderType.LIMIT,
+            quantity = 200,
+            price = 150.00 
+        )
