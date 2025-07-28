@@ -212,3 +212,13 @@ class TestMatchingEngine:
             quantity = 200,
             price = 150.00 
         )
+        self.engine.submit_order(sell_order)
+
+        buy_order = Order(
+            agent_id = "agent2", 
+            symbol = "AAPL",
+            side = OrderSide.BUY, 
+            order_type = OrderType.LIMIT, 
+            quantity = 50, 
+            price = 150.0
+        )
